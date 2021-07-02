@@ -1,6 +1,7 @@
 package uring
 
-// #cgo LDFLAGS: -luring
+// #cgo CFLAGS: -I${SRCDIR}/liburing/src/include
+// #cgo LDFLAGS: -L${SRCDIR}/liburing/src/ -luring
 // #include "io_uring.c"
 import "C"
 
@@ -21,6 +22,8 @@ import (
 )
 
 const bufferSize = device.MaxSegmentSize
+
+func URingAvailable() bool { return *useIOURing && C.has_io_uring() > 0 }
 
 // A UDPConn is a recv-only UDP fd manager.
 // TODO: Support writes.
@@ -49,14 +52,27 @@ type UDPConn struct {
 }
 
 func NewUDPConn(conn *net.UDPConn) (*UDPConn, error) {
+	if !*useIOURing {
+		return nil, DisabledError
+	}
 	// this is dumb
-	local := conn.LocalAddr().String()
-	ip, err := netaddr.ParseIPPort(local)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse UDPConn local addr %s as IP: %w", local, err)
+	local := conn.LocalAddr()
+	var ipp netaddr.IPPort
+	switch l := local.(type) {
+	case *net.UDPAddr:
+		ip, ok := netaddr.FromStdIP(l.IP)
+		if !ok {
+			return nil, fmt.Errorf("failed to parse IP: %v", ip)
+		}
+		ipp = netaddr.IPPortFrom(ip, uint16(l.Port))
+	default:
+		var err error
+		if ipp, err = netaddr.ParseIPPort(l.String()); err != nil {
+			return nil, fmt.Errorf("failed to parse UDPConn local addr %s as IP: %w", local, err)
+		}
 	}
 	ipVersion := 6
-	if ip.IP().Is4() {
+	if ipp.IP().Is4() {
 		ipVersion = 4
 	}
 	// TODO: probe for system capabilities: https://unixism.net/loti/tutorial/probe_liburing.html
@@ -68,12 +84,13 @@ func NewUDPConn(conn *net.UDPConn) (*UDPConn, error) {
 	sendRing := new(C.go_uring)
 
 	fd := C.int(file.Fd())
-	for _, r := range []*C.go_uring{recvRing, sendRing} {
-		ret := C.initialize(r, fd)
-		if ret < 0 {
-			// TODO: free recvRing if sendRing initialize failed
-			return nil, fmt.Errorf("uring initialization failed: %d", ret)
-		}
+	if ret := C.initialize(recvRing, fd); ret < 0 {
+		return nil, fmt.Errorf("uring initialization failed: %d", ret)
+	}
+	if ret := C.initialize(sendRing, fd); ret < 0 {
+		// free recvRing if sendRing initialize failed
+		C.io_uring_queue_exit(recvRing)
+		return nil, fmt.Errorf("uring initialization failed: %d", ret)
 	}
 	u := &UDPConn{
 		recvRing: recvRing,
