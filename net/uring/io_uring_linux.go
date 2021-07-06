@@ -17,6 +17,7 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/device"
 	"inet.af/netaddr"
 )
@@ -290,8 +291,15 @@ func (u *UDPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 // LocalAddr returns the local network address.
 func (c *UDPConn) LocalAddr() net.Addr { return c.local }
 
+// SetDeadline sets the deadline for completion of the next submitted event
 func (c *UDPConn) SetDeadline(t time.Time) error {
-	panic("not implemented") // TODO: Implement
+	until := time.Until(t)
+	timespec := unix.NsecToTimespec(until.Nanoseconds())
+	n := C.set_deadline(c.sendRing, C.long(timespec.Sec), C.longlong(timespec.Nsec))
+	if n < 0 {
+		return fmt.Errorf("SetDeadline failed")
+	}
+	return nil
 }
 
 func (c *UDPConn) SetReadDeadline(t time.Time) error {
