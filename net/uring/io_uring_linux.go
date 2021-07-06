@@ -258,7 +258,11 @@ func (u *UDPConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 
 	if u.is4 {
 		// TODO: native go endianness conversion routines so we don't have to call ntohl, etc.
-		ipu32 := binary.BigEndian.Uint32(udpAddr.IP)
+		var ipu32 uint32
+		// can be nil in case of localhost, relevant for testing.
+		if udpAddr.IP != nil {
+			ipu32 = binary.BigEndian.Uint32(udpAddr.IP)
+		}
 		r.sa.sin_addr.s_addr = C.htonl(C.uint32_t(ipu32))
 		r.sa.sin_port = C.htons(C.uint16_t(udpAddr.Port))
 	} else {
