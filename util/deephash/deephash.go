@@ -12,6 +12,7 @@ package deephash
 import (
 	"bufio"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash"
@@ -19,6 +20,7 @@ import (
 	"reflect"
 	"strconv"
 	"sync"
+	"unsafe"
 )
 
 // hasher is reusable state for hashing a value.
@@ -94,6 +96,11 @@ type appenderTo interface {
 	AppendTo([]byte) []byte
 }
 
+func printUint(w *bufio.Writer, i uint64, scratch []byte) {
+	binary.BigEndian.PutUint64(scratch[:8], i)
+	w.Write(scratch[:8])
+}
+
 // print hashes v into w.
 // It reports whether it was able to do so without hitting a cycle.
 func print(w *bufio.Writer, v reflect.Value, visited map[uintptr]bool, scratch []byte) (acyclic bool) {
@@ -124,31 +131,41 @@ func print(w *bufio.Writer, v reflect.Value, visited map[uintptr]bool, scratch [
 		return print(w, v.Elem(), visited, scratch)
 	case reflect.Struct:
 		acyclic = true
-		w.WriteString("struct{\n")
+		w.WriteString("struct")
+		printUint(w, uint64(v.NumField()), scratch)
 		for i, n := 0, v.NumField(); i < n; i++ {
-			fmt.Fprintf(w, " [%d]: ", i)
+			printUint(w, uint64(i), scratch)
 			if !print(w, v.Field(i), visited, scratch) {
 				acyclic = false
 			}
-			w.WriteString("\n")
 		}
-		w.WriteString("}\n")
 		return acyclic
 	case reflect.Slice, reflect.Array:
 		if v.Type().Elem().Kind() == reflect.Uint8 && v.CanInterface() {
-			fmt.Fprintf(w, "%q", v.Interface())
+			if v.CanAddr() {
+				Len := v.Len()
+				printUint(w, uint64(Len), scratch)
+				if Len > 0 {
+					var s []byte
+					sh := (*reflect.SliceHeader)(unsafe.Pointer(&s))
+					sh.Data = v.Addr().Pointer()
+					sh.Len = Len
+					sh.Cap = Len
+					w.Write(s) // unsafe slice escapes, but w is trusted *bufio.Writer
+				}
+			} else {
+				fmt.Fprintf(w, "%q", v.Interface())
+			}
 			return true
 		}
-		fmt.Fprintf(w, "[%d]{\n", v.Len())
+		printUint(w, uint64(v.Len()), scratch)
 		acyclic = true
 		for i, ln := 0, v.Len(); i < ln; i++ {
-			fmt.Fprintf(w, " [%d]: ", i)
+			printUint(w, uint64(i), scratch)
 			if !print(w, v.Index(i), visited, scratch) {
 				acyclic = false
 			}
-			w.WriteString("\n")
 		}
-		w.WriteString("}\n")
 		return acyclic
 	case reflect.Interface:
 		return print(w, v.Elem(), visited, scratch)
@@ -158,14 +175,14 @@ func print(w *bufio.Writer, v reflect.Value, visited map[uintptr]bool, scratch [
 		}
 		return hashMapFallback(w, v, visited, scratch)
 	case reflect.String:
+		printUint(w, uint64(v.Len()), scratch)
 		w.WriteString(v.String())
 	case reflect.Bool:
 		w.Write(strconv.AppendBool(scratch[:0], v.Bool()))
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		w.Write(strconv.AppendInt(scratch[:0], v.Int(), 10))
+		printUint(w, uint64(v.Int()), scratch)
 	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
-		scratch = strconv.AppendUint(scratch[:0], v.Uint(), 10)
-		w.Write(scratch)
+		printUint(w, v.Uint(), scratch)
 	case reflect.Float32, reflect.Float64:
 		scratch = strconv.AppendUint(scratch[:0], math.Float64bits(v.Float()), 10)
 		w.Write(scratch)

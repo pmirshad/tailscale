@@ -167,6 +167,28 @@ func TestHashMapAcyclic(t *testing.T) {
 	}
 }
 
+func TestPrintArray(t *testing.T) {
+	type T struct {
+		X [32]byte
+	}
+	x := &T{X: [32]byte{1: 1, 31: 31}}
+	var got bytes.Buffer
+	bw := bufio.NewWriter(&got)
+	visited := map[uintptr]bool{}
+	scratch := make([]byte, 0, 128)
+	print(bw, reflect.ValueOf(x), visited, scratch)
+	bw.Flush()
+	const want = "struct" +
+		"\x00\x00\x00\x00\x00\x00\x00\x01" + // 1 field
+		"\x00\x00\x00\x00\x00\x00\x00\x00" + // 0th field
+		"\x00\x00\x00\x00\x00\x00\x00\x20" + // 32 bytes long
+		// the 32 bytes:
+		"\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x1f"
+	if got := got.Bytes(); string(got) != want {
+		t.Errorf("wrong:\n got: %q\nwant: %q\n", got, want)
+	}
+}
+
 func BenchmarkHashMapAcyclic(b *testing.B) {
 	b.ReportAllocs()
 	m := map[int]string{}
